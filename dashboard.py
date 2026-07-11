@@ -246,7 +246,7 @@ with col_left:
     styled = (
         df_vis_table.style
         .apply(color_our, axis=1)
-        .applymap(color_delta, subset=['Δ'])
+        .map(color_delta, subset=['Δ'])
         .format({'Видимость': '{:.1f}%', 'Δ': lambda x: f'+{x:.1f}' if x and x > 0 else (f'{x:.1f}' if x is not None and not pd.isna(x) else '—')})
     )
     st.dataframe(styled, use_container_width=True, height=350)
