@@ -344,7 +344,7 @@ with tab1:
     domain_cols = [c for c in df_comp.columns if c != 'Запрос']
     styled_comp = (
         df_comp.style
-        .applymap(highlight_our, subset=domain_cols)
+        .map(highlight_our, subset=domain_cols)
         .format({c: lambda x: str(int(x)) if pd.notna(x) else '—' for c in domain_cols})
     )
     st.dataframe(styled_comp, use_container_width=True, height=450)
@@ -380,7 +380,7 @@ with tab2:
 
     style_cols = ['Позиция']
     st.dataframe(
-        df_filtered.style.applymap(color_pos, subset=style_cols),
+        df_filtered.style.map(color_pos, subset=style_cols),
         use_container_width=True,
         height=450
     )
