@@ -58,6 +58,10 @@ def load_data(db_path: str) -> pd.DataFrame:
     ''', conn)
     conn.close()
     df['check_date'] = pd.to_datetime(df['check_date'])
+    # Оптимизация памяти
+    df['engine'] = df['engine'].astype('category')
+    df['domain'] = df['domain'].astype('category')
+    df['position'] = df['position'].astype('float32')
     return df
 
 
@@ -246,10 +250,10 @@ with col_left:
     styled = (
         df_vis_table.style
         .apply(color_our, axis=1)
-        .map(color_delta, subset=['Δ'])
+        .applymap(color_delta, subset=['Δ'])
         .format({'Видимость': '{:.1f}%', 'Δ': lambda x: f'+{x:.1f}' if x and x > 0 else (f'{x:.1f}' if x is not None and not pd.isna(x) else '—')})
     )
-    st.dataframe(styled, use_container_width=True, height=350)
+    st.dataframe(styled, width='stretch', height=350)
 
 # ── ГРАФИК ──
 with col_right:
@@ -288,7 +292,7 @@ with col_right:
         for trace in fig.data:
             if trace.name == our_domain:
                 trace.line.width = 3.5
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     else:
         st.info('Накопи хотя бы 2 недели данных — тогда здесь появится график динамики.')
         # Показываем бар-чарт текущих значений
@@ -306,7 +310,7 @@ with col_right:
             xaxis=dict(ticksuffix='%'),
             plot_bgcolor='white', paper_bgcolor='white',
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 st.divider()
 
@@ -344,10 +348,10 @@ with tab1:
     domain_cols = [c for c in df_comp.columns if c != 'Запрос']
     styled_comp = (
         df_comp.style
-        .map(highlight_our, subset=domain_cols)
+        .applymap(highlight_our, subset=domain_cols)
         .format({c: lambda x: str(int(x)) if pd.notna(x) else '—' for c in domain_cols})
     )
-    st.dataframe(styled_comp, use_container_width=True, height=450)
+    st.dataframe(styled_comp, width='stretch', height=450)
 
 with tab2:
     df_our = df_cur[df_cur['domain'] == our_domain][['query','position']].copy()
@@ -380,8 +384,8 @@ with tab2:
 
     style_cols = ['Позиция']
     st.dataframe(
-        df_filtered.style.map(color_pos, subset=style_cols),
-        use_container_width=True,
+        df_filtered.style.applymap(color_pos, subset=style_cols),
+        width="stretch",
         height=450
     )
 
