@@ -224,58 +224,74 @@ for col, val, d, label in kpi2:
 st.divider()
 
 # ── Таблица + Бар ─────────────────────────────────────────────────────────
-col_l, col_r = st.columns(2, gap='large')
+st.subheader('🏆 Сравнение конкурентов')
+df_show = df_cur[df_cur['domain'].isin(show_domains)].copy()
+if len(df_cmp):
+    df_show = df_show.merge(
+        df_cmp[['domain','visibility_weighted','top3','top10','top11_50']].rename(
+            columns={'visibility_weighted':'v_c','top3':'t3c','top10':'t10c','top11_50':'t1150c'}),
+        on='domain', how='left')
+    df_show['Δ Вид.'] = (df_show['visibility_weighted']-df_show['v_c']).round(1).map(
+        lambda x: f'+{x:.1f}' if pd.notna(x) and x>0 else (f'{x:.1f}' if pd.notna(x) else '—'))
+    df_show['Δ Т1-3'] = (df_show['top3']-df_show['t3c']).map(
+        lambda x: f'+{int(x)}' if pd.notna(x) and x>0 else (f'{int(x)}' if pd.notna(x) else '—'))
+    df_show['Δ Т1-10'] = (df_show['top10']-df_show['t10c']).map(
+        lambda x: f'+{int(x)}' if pd.notna(x) and x>0 else (f'{int(x)}' if pd.notna(x) else '—'))
 
-with col_l:
-    st.subheader('🏆 Сравнение конкурентов')
-    df_show = df_cur[df_cur['domain'].isin(show_domains)].copy()
-    if len(df_cmp):
-        df_show = df_show.merge(
-            df_cmp[['domain','visibility_weighted','top3','top10','top11_50']].rename(
-                columns={'visibility_weighted':'v_c','top3':'t3c','top10':'t10c','top11_50':'t1150c'}),
-            on='domain', how='left')
-        df_show['Δ Вид.'] = (df_show['visibility_weighted']-df_show['v_c']).round(1).map(
-            lambda x: f'+{x:.1f}' if pd.notna(x) and x>0 else (f'{x:.1f}' if pd.notna(x) else '—'))
-        df_show['Δ Т1-3'] = (df_show['top3']-df_show['t3c']).map(
-            lambda x: f'+{int(x)}' if pd.notna(x) and x>0 else (f'{int(x)}' if pd.notna(x) else '—'))
-        df_show['Δ Т1-10'] = (df_show['top10']-df_show['t10c']).map(
-            lambda x: f'+{int(x)}' if pd.notna(x) and x>0 else (f'{int(x)}' if pd.notna(x) else '—'))
+df_show = df_show.sort_values('visibility_weighted', ascending=False).reset_index(drop=True)
+df_show.index += 1
 
-    df_show = df_show.sort_values('visibility_weighted', ascending=False).reset_index(drop=True)
-    df_show.index += 1
+base_cols = ['domain','visibility_weighted','top3','top10','top11_50','avg_position','median_position','unique_urls']
+delta_cols = ['Δ Вид.','Δ Т1-3','Δ Т1-10'] if len(df_cmp) else []
 
-    base_cols = ['domain','visibility_weighted','top3','top10','top11_50','avg_position','median_position','unique_urls']
-    delta_cols = ['Δ Вид.','Δ Т1-3','Δ Т1-10'] if len(df_cmp) else []
+df_out = df_show[base_cols + delta_cols].rename(columns={
+    'domain':'Домен','visibility_weighted':'Видимость',
+    'top3':'Топ 1–3','top10':'Топ 1–10','top11_50':'Топ 11–50',
+    'avg_position':'Ср.поз','median_position':'Мед.поз','unique_urls':'URL'})
+df_out['Видимость'] = df_out['Видимость'].map(lambda x: f'{x:.1f}%')
+df_out['Ср.поз']   = df_out['Ср.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
+df_out['Мед.поз']  = df_out['Мед.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
 
-    df_out = df_show[base_cols + delta_cols].rename(columns={
-        'domain':'Домен','visibility_weighted':'Видимость',
-        'top3':'Топ 1–3','top10':'Топ 1–10','top11_50':'Топ 11–50',
-        'avg_position':'Ср.поз','median_position':'Мед.поз','unique_urls':'URL'})
-    df_out['Видимость'] = df_out['Видимость'].map(lambda x: f'{x:.1f}%')
-    df_out['Ср.поз']   = df_out['Ср.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
-    df_out['Мед.поз']  = df_out['Мед.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
-    st.dataframe(df_out, height=450)
-    st.download_button(
-        '⬇️ Экспорт таблицы (CSV)',
-        data=df_out.to_csv(index=False).encode('utf-8-sig'),
-        file_name=f'svetlux_comparison_{sel_date}.csv',
-        mime='text/csv',
-        key='dl_comparison',
-    )
+def _highlight_our_row(row):
+    is_ours = row['Домен'] == our
+    style = 'font-weight: 700; background-color: #EAF2FB;' if is_ours else ''
+    return [style] * len(row)
 
-with col_r:
-    st.subheader('📊 Видимость')
-    df_bar = df_cur[df_cur['domain'].isin(show_domains)].sort_values('visibility_weighted')
-    fig = px.bar(df_bar, x='visibility_weighted', y='domain', orientation='h',
-                 color='domain', color_discrete_map=DOMAIN_COLORS,
-                 text='visibility_weighted',
-                 labels={'visibility_weighted':'Видимость, %','domain':''})
-    fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-    fig.update_layout(height=max(300, len(show_domains)*22+50), showlegend=False,
-                      margin=dict(l=0,r=70,t=10,b=0),
-                      plot_bgcolor='white', paper_bgcolor='white',
-                      xaxis=dict(ticksuffix='%'))
-    st.plotly_chart(fig, use_container_width=True)
+# st.table рендерит полностью, без внутреннего скролла, и поддерживает жирный шрифт через Styler
+st.table(df_out.style.apply(_highlight_our_row, axis=1))
+st.download_button(
+    '⬇️ Экспорт таблицы (CSV)',
+    data=df_out.to_csv(index=False).encode('utf-8-sig'),
+    file_name=f'svetlux_comparison_{sel_date}.csv',
+    mime='text/csv',
+    key='dl_comparison',
+)
+
+st.subheader('📊 Видимость')
+df_bar = df_cur[df_cur['domain'].isin(show_domains)].sort_values('visibility_weighted', ascending=False)
+domain_order_top_to_bottom = df_bar['domain'].tolist()
+domain_order_bottom_to_top = domain_order_top_to_bottom[::-1]  # для оси Y: первый элемент внизу
+
+fig = px.bar(df_bar, x='visibility_weighted', y='domain', orientation='h',
+             color='domain', color_discrete_map=DOMAIN_COLORS,
+             text='visibility_weighted',
+             labels={'visibility_weighted':'Видимость, %','domain':''})
+fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+
+# Наибольшая видимость — сверху; наш домен — жирным в подписи и с обводкой столбца
+tick_labels = [f'<b>{d}</b>' if d == our else d for d in domain_order_bottom_to_top]
+fig.update_yaxes(tickmode='array', tickvals=domain_order_bottom_to_top, ticktext=tick_labels,
+                  categoryorder='array', categoryarray=domain_order_bottom_to_top)
+for tr in fig.data:
+    if tr.name == our:
+        tr.marker.line.width = 2
+        tr.marker.line.color = '#000000'
+
+fig.update_layout(height=max(300, len(show_domains)*24+60), showlegend=False,
+                  margin=dict(l=0,r=70,t=10,b=0),
+                  plot_bgcolor='white', paper_bgcolor='white',
+                  xaxis=dict(ticksuffix='%'))
+st.plotly_chart(fig, use_container_width=True)
 
 # ── Динамика ──────────────────────────────────────────────────────────────
 hist_dates = sorted([d for d in all_dates if d <= sel_date])
