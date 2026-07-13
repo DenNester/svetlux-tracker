@@ -117,7 +117,7 @@ with st.sidebar:
             cmp_date = pd.to_datetime(cmp_choice, format='%d.%m.%Y').date()
 
     st.divider()
-    if st.button('🔄 Обновить данные', use_container_width=True):
+    if st.button('🔄 Обновить данные', width='stretch'):
         st.cache_data.clear()
         st.rerun()
 
@@ -248,17 +248,33 @@ df_out = df_show[base_cols + delta_cols].rename(columns={
     'domain':'Домен','visibility_weighted':'Видимость',
     'top3':'Топ 1–3','top10':'Топ 1–10','top11_50':'Топ 11–50',
     'avg_position':'Ср.поз','median_position':'Мед.поз','unique_urls':'URL'})
-df_out['Видимость'] = df_out['Видимость'].map(lambda x: f'{x:.1f}%')
-df_out['Ср.поз']   = df_out['Ср.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
-df_out['Мед.поз']  = df_out['Мед.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
+df_out.index.name = '№'
+# Данные оставляем числовыми (не превращаем в текст!) — иначе клик по заголовку
+# отсортирует строки как текст ('9.3%' окажется после '34.5%'), а не по величине.
+# Отображаемый формат (проценты, знак +/-) задаём отдельно через column_config.
 
 def _highlight_our_row(row):
     is_ours = row['Домен'] == our
     style = 'font-weight: 700; background-color: #EAF2FB;' if is_ours else ''
     return [style] * len(row)
 
-# st.table рендерит полностью, без внутреннего скролла, и поддерживает жирный шрифт через Styler
-st.table(df_out.style.apply(_highlight_our_row, axis=1))
+col_cfg = {
+    'Видимость': st.column_config.NumberColumn('Видимость', format='%.1f%%'),
+    'Ср.поз':    st.column_config.NumberColumn('Ср.поз', format='%.1f'),
+    'Мед.поз':   st.column_config.NumberColumn('Мед.поз', format='%.1f'),
+}
+if 'Δ Вид.' in df_out.columns:
+    col_cfg['Δ Вид.']  = st.column_config.NumberColumn('Δ Вид.', format='%+.1f')
+    col_cfg['Δ Т1-3']  = st.column_config.NumberColumn('Δ Т1-3', format='%+d')
+    col_cfg['Δ Т1-10'] = st.column_config.NumberColumn('Δ Т1-10', format='%+d')
+
+# height='auto' — таблица растягивается под все строки, без внутреннего скролла.
+# Колонка «№» (индекс) не участвует в сортировке по клику — её порядок не меняется.
+st.dataframe(
+    df_out.style.apply(_highlight_our_row, axis=1),
+    height='auto',
+    column_config=col_cfg,
+)
 st.download_button(
     '⬇️ Экспорт таблицы (CSV)',
     data=df_out.to_csv(index=False).encode('utf-8-sig'),
@@ -291,7 +307,7 @@ fig.update_layout(height=max(300, len(show_domains)*24+60), showlegend=False,
                   margin=dict(l=0,r=70,t=10,b=0),
                   plot_bgcolor='white', paper_bgcolor='white',
                   xaxis=dict(ticksuffix='%'))
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width='stretch')
 
 # ── Динамика ──────────────────────────────────────────────────────────────
 hist_dates = sorted([d for d in all_dates if d <= sel_date])
@@ -321,7 +337,7 @@ if len(hist_dates) >= 2:
                             plot_bgcolor='white', paper_bgcolor='white',
                             yaxis=dict(ticksuffix='%'),
                             legend=dict(orientation='h',y=1.12,x=0,font=dict(size=9)))
-        st.plotly_chart(fig_v, use_container_width=True)
+        st.plotly_chart(fig_v, width='stretch')
 
     with tab_ranges:
         st.markdown('**Динамика по диапазонам позиций — светлюкс.ru**')
@@ -349,7 +365,7 @@ if len(hist_dates) >= 2:
                 legend=dict(orientation='h',y=1.12,x=0),
                 xaxis_title='', yaxis_title='Запросов',
             )
-            st.plotly_chart(fig_r, use_container_width=True)
+            st.plotly_chart(fig_r, width='stretch')
 
         st.markdown('**Сравнение конкурентов по диапазонам (текущая дата)**')
         sel_range = st.selectbox('Диапазон', ['Топ 1–3','Топ 1–10','Топ 11–50'],
@@ -363,7 +379,7 @@ if len(hist_dates) >= 2:
         fig_rc.update_layout(height=max(250, len(show_domains)*22+50), showlegend=False,
                               margin=dict(l=0,r=50,t=10,b=0),
                               plot_bgcolor='white', paper_bgcolor='white')
-        st.plotly_chart(fig_rc, use_container_width=True)
+        st.plotly_chart(fig_rc, width='stretch')
 
     with tab_pos:
         st.markdown('**Динамика средней и медианной позиции — светлюкс.ru**')
@@ -392,7 +408,7 @@ if len(hist_dates) >= 2:
                 yaxis=dict(autorange='reversed', title='Позиция (чем меньше — тем лучше)'),
                 legend=dict(orientation='h', y=1.12, x=0),
             )
-            st.plotly_chart(fig_p, use_container_width=True)
+            st.plotly_chart(fig_p, width='stretch')
             st.caption('Ось инвертирована: позиция 1 — вверху (лучше), позиция 50 — внизу.')
         else:
             st.info('Накопи хотя бы 2 измерения — тогда появится график динамики.')
