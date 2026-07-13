@@ -28,12 +28,32 @@ DOMAIN_COLORS = {
     'msveta.ru':'#009688','lustrypremium.ru':'#FF9800',
 }
 
+REQUIRED_SUMMARY_COLS = ['check_date','engine','domain','hide_brand','total_queries',
+                         'visibility_weighted','top3','top10','top11_50','top1_50',
+                         'not_found','avg_position','median_position','unique_urls']
+REQUIRED_POSITIONS_COLS = ['check_date','engine','query','position']
+
 @st.cache_data
 def load_summary():
     for p in [Path(__file__).parent/'visibility_summary.csv', Path('visibility_summary.csv')]:
         if p.exists():
-            df = pd.read_csv(str(p))
+            df = pd.read_csv(str(p), encoding='utf-8-sig')
+            df.columns = df.columns.str.strip()
+            missing = [c for c in REQUIRED_SUMMARY_COLS if c not in df.columns]
+            if missing:
+                st.error(
+                    f'❌ В visibility_summary.csv не хватает колонок: **{", ".join(missing)}**.\n\n'
+                    f'Колонки, которые реально есть в файле: {", ".join(df.columns)}\n\n'
+                    f'Похоже, в репозитории на GitHub лежит не та версия файла — проверь, '
+                    f'что закоммичен актуальный CSV с этими колонками.'
+                )
+                st.stop()
             df['check_date'] = pd.to_datetime(df['check_date']).dt.date
+            if df['hide_brand'].dtype != bool:
+                df['hide_brand'] = df['hide_brand'].astype(str).str.strip().str.lower().map(
+                    {'true': True, 'false': False, '1': True, '0': False,
+                     'истина': True, 'ложь': False}
+                )
             return df
     return None
 
@@ -41,7 +61,15 @@ def load_summary():
 def load_positions():
     for p in [Path(__file__).parent/'svetlux_positions.csv', Path('svetlux_positions.csv')]:
         if p.exists():
-            df = pd.read_csv(str(p))
+            df = pd.read_csv(str(p), encoding='utf-8-sig')
+            df.columns = df.columns.str.strip()
+            missing = [c for c in REQUIRED_POSITIONS_COLS if c not in df.columns]
+            if missing:
+                st.error(
+                    f'❌ В svetlux_positions.csv не хватает колонок: **{", ".join(missing)}**.\n\n'
+                    f'Колонки, которые реально есть в файле: {", ".join(df.columns)}'
+                )
+                st.stop()
             df['check_date'] = pd.to_datetime(df['check_date']).dt.date
             df['position'] = pd.to_numeric(df['position'], errors='coerce')
             return df
@@ -57,6 +85,12 @@ if df_sum is None:
 all_dates   = sorted(df_sum['check_date'].unique(), reverse=True)
 all_domains = sorted(df_sum['domain'].unique().tolist())
 our = 'svetlux.ru'
+
+# Автоцвет для доменов, которых нет в DOMAIN_COLORS — чтобы не ломать консистентность графиков
+_FALLBACK_PALETTE = px.colors.qualitative.Set3
+_unmapped = [d for d in all_domains if d not in DOMAIN_COLORS]
+for i, d in enumerate(_unmapped):
+    DOMAIN_COLORS[d] = _FALLBACK_PALETTE[i % len(_FALLBACK_PALETTE)]
 
 # ── Сайдбар ───────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -77,7 +111,12 @@ with st.sidebar:
         prev_list = [d for d in all_dates if d < sel_date]
         cmp_date  = prev_list[0] if prev_list else None
     else:
-        cmp_date = pd.to_datetime(cmp_choice).date()
+        cmp_date = pd.to_datetime(cmp_choice, format='%d.%m.%Y').date()
+
+    st.divider()
+    if st.button('🔄 Обновить данные', use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
     st.divider()
     competitors = [d for d in all_domains if d != our]
@@ -111,10 +150,12 @@ vis_cur  = our_val(df_cur, 'visibility_weighted', 0.0)
 top3_cur = our_val(df_cur, 'top3', 0)
 top10_cur= our_val(df_cur, 'top10', 0)
 top1150  = our_val(df_cur, 'top11_50', 0)
+top150   = our_val(df_cur, 'top1_50', 0)
 nf_cur   = our_val(df_cur, 'not_found', 0)
 avg_cur  = our_val(df_cur, 'avg_position')
 med_cur  = our_val(df_cur, 'median_position')
 url_cur  = our_val(df_cur, 'unique_urls', 0)
+cov_cur  = (top150 / total_q * 100) if total_q else 0.0
 
 vis_cmp  = our_val(df_cmp, 'visibility_weighted')
 top3_cmp = our_val(df_cmp, 'top3')
@@ -122,6 +163,9 @@ top10_cmp= our_val(df_cmp, 'top10')
 top1150c = our_val(df_cmp, 'top11_50')
 avg_cmp  = our_val(df_cmp, 'avg_position')
 med_cmp  = our_val(df_cmp, 'median_position')
+top150c  = our_val(df_cmp, 'top1_50')
+total_qc = our_val(df_cmp, 'total_queries')
+cov_cmp  = (top150c / total_qc * 100) if (top150c is not None and total_qc) else None
 
 def delta_badge(cur, prev, fmt='.1f', invert=False):
     """Returns HTML badge with delta"""
@@ -156,14 +200,15 @@ for col, val, d, label in kpi1:
         f'<div class="metric-label">{label}</div></div>', unsafe_allow_html=True)
 
 # ── КПИ строка 2: позиции и охват ─────────────────────────────────────────
-c5,c6,c7,c8 = st.columns(4)
+c5,c6,c7,c8,c9 = st.columns(5)
 kpi2 = [
     (c5, f'{avg_cur:.1f}' if avg_cur else '—',
          delta_badge(avg_cur, avg_cmp, invert=True), 'Средняя позиция'),
     (c6, f'{med_cur:.1f}' if med_cur else '—',
          delta_badge(med_cur, med_cmp, invert=True), 'Медианная позиция'),
-    (c7, url_cur, '', 'URL в выдаче'),
-    (c8, nf_cur,  '', 'Не в Топ-50'),
+    (c7, f'{cov_cur:.1f}%', delta_badge(cov_cur, cov_cmp), 'Покрытие в Топ-50'),
+    (c8, url_cur, '', 'URL в выдаче'),
+    (c9, nf_cur,  '', 'Не в Топ-50'),
 ]
 for col, val, d, label in kpi2:
     col.markdown(
@@ -204,6 +249,13 @@ with col_l:
     df_out['Ср.поз']   = df_out['Ср.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
     df_out['Мед.поз']  = df_out['Мед.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
     st.dataframe(df_out, height=450)
+    st.download_button(
+        '⬇️ Экспорт таблицы (CSV)',
+        data=df_out.to_csv(index=False).encode('utf-8-sig'),
+        file_name=f'svetlux_comparison_{sel_date}.csv',
+        mime='text/csv',
+        key='dl_comparison',
+    )
 
 with col_r:
     st.subheader('📊 Видимость')
@@ -329,7 +381,7 @@ st.divider()
 st.subheader('🔍 Позиции svetlux.ru по запросам')
 if len(df_pos):
     mask_p = ((df_pos['check_date']==sel_date) & (df_pos['engine']==engine_key))
-    if hide_brand:
+    if hide_brand and 'is_brand' in df_pos.columns:
         mask_p = mask_p & (~df_pos['is_brand'].fillna(False))
     df_p = df_pos[mask_p][['query','position']].sort_values('position').reset_index(drop=True)
 
@@ -349,6 +401,13 @@ if len(df_pos):
     df_p.index = range(1, len(df_p)+1)
     st.dataframe(df_p, height=400)
     st.caption(f'Показано: {len(df_p)} запросов')
+    st.download_button(
+        '⬇️ Экспорт позиций (CSV)',
+        data=df_p.to_csv(index=False).encode('utf-8-sig'),
+        file_name=f'svetlux_positions_{sel_date}.csv',
+        mime='text/csv',
+        key='dl_positions',
+    )
 
 st.divider()
 st.caption('Данные: XMLRiver.Parser · Топ-50 · Москва · Видимость взвешена по частотности Wordstat')
