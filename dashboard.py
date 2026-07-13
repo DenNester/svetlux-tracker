@@ -105,13 +105,16 @@ with st.sidebar:
 
     st.markdown('**Дата сравнения**')
     cmp_options = ['Предыдущее измерение'] + [d.strftime('%d.%m.%Y') for d in all_dates if d != sel_date]
-    cmp_choice  = st.selectbox('Сравнить с', cmp_options, key='cmp_date')
-
-    if cmp_choice == 'Предыдущее измерение':
-        prev_list = [d for d in all_dates if d < sel_date]
-        cmp_date  = prev_list[0] if prev_list else None
+    if len(cmp_options) == 1:
+        st.caption('Пока только 1 дата в базе — сравнивать не с чем.')
+        cmp_date = None
     else:
-        cmp_date = pd.to_datetime(cmp_choice, format='%d.%m.%Y').date()
+        cmp_choice = st.selectbox('Сравнить с', cmp_options, key='cmp_date')
+        if cmp_choice == 'Предыдущее измерение':
+            prev_list = [d for d in all_dates if d < sel_date]
+            cmp_date  = prev_list[0] if prev_list else None
+        else:
+            cmp_date = pd.to_datetime(cmp_choice, format='%d.%m.%Y').date()
 
     st.divider()
     if st.button('🔄 Обновить данные', use_container_width=True):
@@ -133,7 +136,8 @@ with st.sidebar:
 
 # ── Фильтр данных ─────────────────────────────────────────────────────────
 def get_slice(date):
-    if date is None: return pd.DataFrame()
+    if date is None:
+        return df_sum.iloc[0:0].copy()  # пусто, но с теми же колонками — не ломает our_val
     return df_sum[(df_sum['check_date']==date) &
                   (df_sum['engine']==engine_key) &
                   (df_sum['hide_brand']==hide_brand)].copy()
@@ -142,6 +146,8 @@ df_cur  = get_slice(sel_date)
 df_cmp  = get_slice(cmp_date)
 
 def our_val(df, col, default=None):
+    if 'domain' not in df.columns or col not in df.columns:
+        return default
     row = df[df['domain']==our]
     return row[col].iloc[0] if len(row) else default
 
