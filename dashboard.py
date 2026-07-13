@@ -7,6 +7,7 @@ from pathlib import Path
 st.set_page_config(page_title='Светлюкс — Видимость', page_icon='💡', layout='wide')
 
 st.markdown("""<style>
+.block-container{padding-top:1.5rem;}
 .metric-card{background:#f8f9fa;border-radius:10px;padding:14px 18px;
              border-left:4px solid #1F4E79;margin-bottom:8px;}
 .metric-value{font-size:1.7rem;font-weight:700;color:#1F4E79;line-height:1.2;}
@@ -250,9 +251,12 @@ df_out = df_show[base_cols + delta_cols].rename(columns={
 # не узнаёт и не может пересчитать №. Поэтому сортировку делаем явными контролами:
 # тогда порядок считается в Python, и колонка «№» всегда честно 1..N для текущего вида.
 sort_options = ['Видимость','Топ 1–3','Топ 1–10','Топ 11–50','Ср.поз','Мед.поз','URL','Домен'] + delta_cols
-c_s1, c_s2 = st.columns([3,1])
+c_s0, c_s1, c_s2 = st.columns([1.1, 2.3, 1.6])
+with c_s0:
+    st.markdown('<div style="padding-top:8px;">Сортировать по:</div>', unsafe_allow_html=True)
 with c_s1:
-    sort_by = st.selectbox('Сортировать по', sort_options, index=0, key='table_sort_col')
+    sort_by = st.selectbox('Сортировать по', sort_options, index=0, key='table_sort_col',
+                            label_visibility='collapsed')
 with c_s2:
     sort_asc = st.toggle('По возрастанию', value=False, key='table_sort_asc')
 
@@ -282,7 +286,7 @@ def _highlight_our_row(row):
 # st.table (не st.dataframe!) — нет клик-сортировки в браузере, поэтому «№» гарантированно
 # всегда 1..N для того порядка, что выбран контролами выше. Плюс: не нужен внутренний скролл,
 # и жирный шрифт для нашего домена рендерится надёжно (полная поддержка CSS).
-st.table(df_disp.style.apply(_highlight_our_row, axis=1))
+st.table(df_disp.style.apply(_highlight_our_row, axis=1), hide_index=False)
 st.download_button(
     '⬇️ Экспорт таблицы (CSV)',
     data=csv_bytes,
