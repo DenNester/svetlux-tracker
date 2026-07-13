@@ -231,15 +231,9 @@ if len(df_cmp):
         df_cmp[['domain','visibility_weighted','top3','top10','top11_50']].rename(
             columns={'visibility_weighted':'v_c','top3':'t3c','top10':'t10c','top11_50':'t1150c'}),
         on='domain', how='left')
-    df_show['Δ Вид.'] = (df_show['visibility_weighted']-df_show['v_c']).round(1).map(
-        lambda x: f'+{x:.1f}' if pd.notna(x) and x>0 else (f'{x:.1f}' if pd.notna(x) else '—'))
-    df_show['Δ Т1-3'] = (df_show['top3']-df_show['t3c']).map(
-        lambda x: f'+{int(x)}' if pd.notna(x) and x>0 else (f'{int(x)}' if pd.notna(x) else '—'))
-    df_show['Δ Т1-10'] = (df_show['top10']-df_show['t10c']).map(
-        lambda x: f'+{int(x)}' if pd.notna(x) and x>0 else (f'{int(x)}' if pd.notna(x) else '—'))
-
-df_show = df_show.sort_values('visibility_weighted', ascending=False).reset_index(drop=True)
-df_show.index += 1
+    df_show['Δ Вид.']  = (df_show['visibility_weighted']-df_show['v_c']).round(1)
+    df_show['Δ Т1-3']  = (df_show['top3']-df_show['t3c'])
+    df_show['Δ Т1-10'] = (df_show['top10']-df_show['t10c'])
 
 base_cols = ['domain','visibility_weighted','top3','top10','top11_50','avg_position','median_position','unique_urls']
 delta_cols = ['Δ Вид.','Δ Т1-3','Δ Т1-10'] if len(df_cmp) else []
@@ -248,36 +242,50 @@ df_out = df_show[base_cols + delta_cols].rename(columns={
     'domain':'Домен','visibility_weighted':'Видимость',
     'top3':'Топ 1–3','top10':'Топ 1–10','top11_50':'Топ 11–50',
     'avg_position':'Ср.поз','median_position':'Мед.поз','unique_urls':'URL'})
+# Данные оставляем числовыми (не превращаем в текст!) — иначе сортировка сравнивала бы
+# строки побуквенно ('9.3%' оказалось бы после '34.5%'). Формат (%, +/-) — через column_config.
+
+# ── Сортировка ──────────────────────────────────────────────────────────
+# В st.dataframe клик по заголовку сортирует только на стороне браузера — Python об этом
+# не узнаёт и не может пересчитать №. Поэтому сортировку делаем явными контролами:
+# тогда порядок считается в Python, и колонка «№» всегда честно 1..N для текущего вида.
+sort_options = ['Видимость','Топ 1–3','Топ 1–10','Топ 11–50','Ср.поз','Мед.поз','URL','Домен'] + delta_cols
+c_s1, c_s2 = st.columns([3,1])
+with c_s1:
+    sort_by = st.selectbox('Сортировать по', sort_options, index=0, key='table_sort_col')
+with c_s2:
+    sort_asc = st.toggle('По возрастанию', value=False, key='table_sort_asc')
+
+df_out = df_out.sort_values(sort_by, ascending=sort_asc).reset_index(drop=True)
+df_out.index = range(1, len(df_out)+1)
 df_out.index.name = '№'
-# Данные оставляем числовыми (не превращаем в текст!) — иначе клик по заголовку
-# отсортирует строки как текст ('9.3%' окажется после '34.5%'), а не по величине.
-# Отображаемый формат (проценты, знак +/-) задаём отдельно через column_config.
+
+# CSV экспортируем с исходными числами (до форматирования в текст)
+csv_bytes = df_out.to_csv(index=False).encode('utf-8-sig')
+
+# Форматируем в текст ТОЛЬКО для отображения — сортировка (выше) уже была сделана по числам,
+# так что порядок остаётся верным, а показываем уже красиво.
+df_disp = df_out.copy()
+df_disp['Видимость'] = df_disp['Видимость'].map(lambda x: f'{x:.1f}%')
+df_disp['Ср.поз']    = df_disp['Ср.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
+df_disp['Мед.поз']   = df_disp['Мед.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
+if 'Δ Вид.' in df_disp.columns:
+    df_disp['Δ Вид.']  = df_disp['Δ Вид.'].map(lambda x: f'+{x:.1f}' if pd.notna(x) and x>0 else (f'{x:.1f}' if pd.notna(x) else '—'))
+    df_disp['Δ Т1-3']  = df_disp['Δ Т1-3'].map(lambda x: f'+{int(x)}' if pd.notna(x) and x>0 else (f'{int(x)}' if pd.notna(x) else '—'))
+    df_disp['Δ Т1-10'] = df_disp['Δ Т1-10'].map(lambda x: f'+{int(x)}' if pd.notna(x) and x>0 else (f'{int(x)}' if pd.notna(x) else '—'))
 
 def _highlight_our_row(row):
     is_ours = row['Домен'] == our
     style = 'font-weight: 700; background-color: #EAF2FB;' if is_ours else ''
     return [style] * len(row)
 
-col_cfg = {
-    'Видимость': st.column_config.NumberColumn('Видимость', format='%.1f%%'),
-    'Ср.поз':    st.column_config.NumberColumn('Ср.поз', format='%.1f'),
-    'Мед.поз':   st.column_config.NumberColumn('Мед.поз', format='%.1f'),
-}
-if 'Δ Вид.' in df_out.columns:
-    col_cfg['Δ Вид.']  = st.column_config.NumberColumn('Δ Вид.', format='%+.1f')
-    col_cfg['Δ Т1-3']  = st.column_config.NumberColumn('Δ Т1-3', format='%+d')
-    col_cfg['Δ Т1-10'] = st.column_config.NumberColumn('Δ Т1-10', format='%+d')
-
-# height='auto' — таблица растягивается под все строки, без внутреннего скролла.
-# Колонка «№» (индекс) не участвует в сортировке по клику — её порядок не меняется.
-st.dataframe(
-    df_out.style.apply(_highlight_our_row, axis=1),
-    height='auto',
-    column_config=col_cfg,
-)
+# st.table (не st.dataframe!) — нет клик-сортировки в браузере, поэтому «№» гарантированно
+# всегда 1..N для того порядка, что выбран контролами выше. Плюс: не нужен внутренний скролл,
+# и жирный шрифт для нашего домена рендерится надёжно (полная поддержка CSS).
+st.table(df_disp.style.apply(_highlight_our_row, axis=1))
 st.download_button(
     '⬇️ Экспорт таблицы (CSV)',
-    data=df_out.to_csv(index=False).encode('utf-8-sig'),
+    data=csv_bytes,
     file_name=f'svetlux_comparison_{sel_date}.csv',
     mime='text/csv',
     key='dl_comparison',
