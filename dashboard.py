@@ -76,8 +76,68 @@ def load_positions():
             return df
     return pd.DataFrame()
 
+REQUIRED_ALLPOS_COLS = ['check_date','engine','domain','query','position']
+
+@st.cache_data
+def load_all_positions():
+    """Опциональный файл: позиции ВСЕХ отслеживаемых доменов по каждому запросу.
+    Нужен для честного сравнения дат по пересечению списка запросов.
+    Если файла нет — сравнение просто работает по-старому (на полных списках)."""
+    for p in [Path(__file__).parent/'all_positions.csv', Path('all_positions.csv')]:
+        if p.exists():
+            df = pd.read_csv(str(p), encoding='utf-8-sig')
+            df.columns = df.columns.str.strip()
+            missing = [c for c in REQUIRED_ALLPOS_COLS if c not in df.columns]
+            if missing:
+                return pd.DataFrame(columns=REQUIRED_ALLPOS_COLS)
+            df['check_date'] = pd.to_datetime(df['check_date']).dt.date
+            df['position'] = pd.to_numeric(df['position'], errors='coerce')
+            return df
+    return pd.DataFrame(columns=REQUIRED_ALLPOS_COLS)
+
+def _pos_weight(p):
+    """Та же шкала весов по позиции, что и в rank_tracker.py — используется здесь
+    только для пересчёта видимости на пересечении запросов двух дат."""
+    if pd.isna(p): return 0
+    w = {1:1.0,2:0.85,3:0.75,4:0.65,5:0.6,6:0.55,7:0.5,8:0.45,9:0.4,10:0.37}
+    if p <= 10: return w.get(int(p), 0.35)
+    if p <= 20: return 0.2
+    if p <= 30: return 0.1
+    if p <= 50: return 0.05
+    return 0
+
+def intersection_metrics(df_allpos, engine_key, date_a, date_b, domains):
+    """Пересчитывает метрики для date_a и date_b, используя ТОЛЬКО запросы,
+    которые проверялись на ОБЕ даты — честное сравнение при смене списка запросов.
+    Возвращает (DataFrame индексированный [date, domain], число общих запросов) или (None, 0)."""
+    if df_allpos.empty or date_a is None or date_b is None:
+        return None, 0
+    sub = df_allpos[df_allpos['engine'] == engine_key]
+    q_a = set(sub.loc[sub['check_date']==date_a, 'query'].unique())
+    q_b = set(sub.loc[sub['check_date']==date_b, 'query'].unique())
+    common = q_a & q_b
+    if not common:
+        return None, 0
+    rows = []
+    for date_x in (date_a, date_b):
+        d = sub[(sub['check_date']==date_x) & (sub['query'].isin(common))]
+        n = len(common)
+        for dom in domains:
+            s = d.loc[d['domain']==dom, 'position']
+            found = s[s <= 50]
+            top3, top10, top50 = int((s<=3).sum()), int((s<=10).sum()), int((s<=50).sum())
+            rows.append({
+                'check_date': date_x, 'domain': dom, 'n_common': n,
+                'visibility_isect': s.apply(_pos_weight).sum()/n*100 if n else 0.0,
+                'top3_isect': top3, 'top10_isect': top10, 'top11_50_isect': top50-top10,
+                'avg_isect': found.mean() if len(found) else None,
+                'median_isect': found.median() if len(found) else None,
+            })
+    return pd.DataFrame(rows).set_index(['check_date','domain']), len(common)
+
 df_sum = load_summary()
 df_pos = load_positions()
+df_allpos = load_all_positions()
 
 if df_sum is None:
     st.error('Файл visibility_summary.csv не найден.')
@@ -146,6 +206,15 @@ def get_slice(date):
 df_cur  = get_slice(sel_date)
 df_cmp  = get_slice(cmp_date)
 
+# Честное сравнение по пересечению запросов (если список менялся между датами)
+isect_df, n_common = intersection_metrics(df_allpos, engine_key, sel_date, cmp_date, all_domains)
+use_isect = isect_df is not None
+
+def isect_val(date, dom, col):
+    if not use_isect or (date, dom) not in isect_df.index:
+        return None
+    return isect_df.loc[(date, dom), col]
+
 def our_val(df, col, default=None):
     if 'domain' not in df.columns or col not in df.columns:
         return default
@@ -164,15 +233,35 @@ med_cur  = our_val(df_cur, 'median_position')
 url_cur  = our_val(df_cur, 'unique_urls', 0)
 cov_cur  = (top150 / total_q * 100) if total_q else 0.0
 
-vis_cmp  = our_val(df_cmp, 'visibility_weighted')
-top3_cmp = our_val(df_cmp, 'top3')
-top10_cmp= our_val(df_cmp, 'top10')
-top1150c = our_val(df_cmp, 'top11_50')
-avg_cmp  = our_val(df_cmp, 'avg_position')
-med_cmp  = our_val(df_cmp, 'median_position')
-top150c  = our_val(df_cmp, 'top1_50')
-total_qc = our_val(df_cmp, 'total_queries')
-cov_cmp  = (top150c / total_qc * 100) if (top150c is not None and total_qc) else None
+if use_isect:
+    # Честная база для ДЕЛЬТЫ: обе даты пересчитаны по одним и тем же общим запросам.
+    # Крупное число на карточке при этом остаётся полным текущим значением (vis_cur и т.д.) —
+    # меняем только то, с чем его сравниваем.
+    vis_for_delta  = isect_val(sel_date, our, 'visibility_isect')
+    vis_cmp        = isect_val(cmp_date, our, 'visibility_isect')
+    top3_for_delta = isect_val(sel_date, our, 'top3_isect')
+    top3_cmp       = isect_val(cmp_date, our, 'top3_isect')
+    top10_for_delta= isect_val(sel_date, our, 'top10_isect')
+    top10_cmp      = isect_val(cmp_date, our, 'top10_isect')
+    top1150_for_delta = isect_val(sel_date, our, 'top11_50_isect')
+    top1150c       = isect_val(cmp_date, our, 'top11_50_isect')
+    avg_for_delta  = isect_val(sel_date, our, 'avg_isect')
+    avg_cmp        = isect_val(cmp_date, our, 'avg_isect')
+    med_for_delta  = isect_val(sel_date, our, 'median_isect')
+    med_cmp        = isect_val(cmp_date, our, 'median_isect')
+    cov_cmp        = None  # покрытие по пересечению не считаем — нет единого "topN" знаменателя
+else:
+    vis_for_delta = top3_for_delta = top10_for_delta = top1150_for_delta = None
+    avg_for_delta = med_for_delta = None
+    vis_cmp  = our_val(df_cmp, 'visibility_weighted')
+    top3_cmp = our_val(df_cmp, 'top3')
+    top10_cmp= our_val(df_cmp, 'top10')
+    top1150c = our_val(df_cmp, 'top11_50')
+    avg_cmp  = our_val(df_cmp, 'avg_position')
+    med_cmp  = our_val(df_cmp, 'median_position')
+    top150c  = our_val(df_cmp, 'top1_50')
+    total_qc = our_val(df_cmp, 'total_queries')
+    cov_cmp  = (top150c / total_qc * 100) if (top150c is not None and total_qc) else None
 
 def delta_badge(cur, prev, fmt='.1f', invert=False):
     """Returns HTML badge with delta"""
@@ -192,14 +281,21 @@ def delta_badge(cur, prev, fmt='.1f', invert=False):
 st.title('💡 Светлюкс — Видимость в поисковиках')
 cmp_label = f' (vs {cmp_date.strftime("%d.%m")})' if cmp_date else ''
 st.subheader(f'{engine_label} · {sel_date.strftime("%d.%m.%Y")}{cmp_label} · {total_q} запросов')
+if cmp_date:
+    if use_isect:
+        st.caption(f'📐 Δ рассчитана по {n_common} запросам, общим для {sel_date.strftime("%d.%m.%Y")} '
+                   f'и {cmp_date.strftime("%d.%m.%Y")} — честное сравнение, даже если список запросов менялся.')
+    else:
+        st.caption(f'⚠️ Нет данных по запросам для пересечения с {cmp_date.strftime("%d.%m.%Y")} — '
+                   f'Δ считается по полным (возможно разным по составу) спискам запросов.')
 
 # ── КПИ строка 1: основные ────────────────────────────────────────────────
 c1,c2,c3,c4 = st.columns(4)
 kpi1 = [
-    (c1, f'{vis_cur:.1f}%', delta_badge(vis_cur, vis_cmp), 'Видимость (взвеш.)'),
-    (c2, top3_cur,  delta_badge(top3_cur, top3_cmp, fmt='d'),   'Топ 1–3'),
-    (c3, top10_cur, delta_badge(top10_cur, top10_cmp, fmt='d'),  'Топ 1–10'),
-    (c4, top1150,   delta_badge(top1150, top1150c, fmt='d'),     'Топ 11–50'),
+    (c1, f'{vis_cur:.1f}%', delta_badge(vis_for_delta if use_isect else vis_cur, vis_cmp), 'Видимость (взвеш.)'),
+    (c2, top3_cur,  delta_badge(top3_for_delta if use_isect else top3_cur, top3_cmp, fmt='d'),   'Топ 1–3'),
+    (c3, top10_cur, delta_badge(top10_for_delta if use_isect else top10_cur, top10_cmp, fmt='d'),  'Топ 1–10'),
+    (c4, top1150,   delta_badge(top1150_for_delta if use_isect else top1150, top1150c, fmt='d'),     'Топ 11–50'),
 ]
 for col, val, d, label in kpi1:
     col.markdown(
@@ -210,9 +306,9 @@ for col, val, d, label in kpi1:
 c5,c6,c7,c8,c9 = st.columns(5)
 kpi2 = [
     (c5, f'{avg_cur:.1f}' if avg_cur else '—',
-         delta_badge(avg_cur, avg_cmp, invert=True), 'Средняя позиция'),
+         delta_badge(avg_for_delta if use_isect else avg_cur, avg_cmp, invert=True), 'Средняя позиция'),
     (c6, f'{med_cur:.1f}' if med_cur else '—',
-         delta_badge(med_cur, med_cmp, invert=True), 'Медианная позиция'),
+         delta_badge(med_for_delta if use_isect else med_cur, med_cmp, invert=True), 'Медианная позиция'),
     (c7, f'{cov_cur:.1f}%', delta_badge(cov_cur, cov_cmp), 'Покрытие в Топ-50'),
     (c8, url_cur, '', 'URL в выдаче'),
     (c9, nf_cur,  '', 'Не в Топ-50'),
@@ -227,30 +323,48 @@ st.divider()
 # ── Таблица + Бар ─────────────────────────────────────────────────────────
 st.subheader('🏆 Сравнение конкурентов')
 df_show = df_cur[df_cur['domain'].isin(show_domains)].copy()
-if len(df_cmp):
+
+# Дельты по каждому домену: если есть пересечение запросов - честная база (обе даты
+# пересчитаны на одном наборе запросов), иначе - как раньше, по полным спискам.
+has_delta = False
+if use_isect:
+    isect_cur = isect_df.xs(sel_date, level='check_date')[
+        ['visibility_isect','top3_isect','top10_isect','top11_50_isect','avg_isect','median_isect']]
+    isect_cmp = isect_df.xs(cmp_date, level='check_date')[
+        ['visibility_isect','top3_isect','top10_isect','top11_50_isect','avg_isect','median_isect']]
+    d = isect_cur.subtract(isect_cmp).rename(columns=lambda c: 'd_'+c)
+    df_show = df_show.merge(d, left_on='domain', right_index=True, how='left')
+    has_delta = True
+elif len(df_cmp):
     df_show = df_show.merge(
-        df_cmp[['domain','visibility_weighted','top3','top10','top11_50']].rename(
-            columns={'visibility_weighted':'v_c','top3':'t3c','top10':'t10c','top11_50':'t1150c'}),
+        df_cmp[['domain','visibility_weighted','top3','top10','top11_50','avg_position','median_position']].rename(
+            columns={'visibility_weighted':'v_c','top3':'t3c','top10':'t10c','top11_50':'t1150c',
+                     'avg_position':'avgc','median_position':'medc'}),
         on='domain', how='left')
-    df_show['Δ Вид.']  = (df_show['visibility_weighted']-df_show['v_c']).round(1)
-    df_show['Δ Т1-3']  = (df_show['top3']-df_show['t3c'])
-    df_show['Δ Т1-10'] = (df_show['top10']-df_show['t10c'])
+    df_show['d_visibility_isect'] = df_show['visibility_weighted'] - df_show['v_c']
+    df_show['d_top3_isect']       = df_show['top3'] - df_show['t3c']
+    df_show['d_top10_isect']      = df_show['top10'] - df_show['t10c']
+    df_show['d_top11_50_isect']   = df_show['top11_50'] - df_show['t1150c']
+    df_show['d_avg_isect']        = df_show['avg_position'] - df_show['avgc']
+    df_show['d_median_isect']     = df_show['median_position'] - df_show['medc']
+    has_delta = True
 
 base_cols = ['domain','visibility_weighted','top3','top10','top11_50','avg_position','median_position','unique_urls']
-delta_cols = ['Δ Вид.','Δ Т1-3','Δ Т1-10'] if len(df_cmp) else []
-
-df_out = df_show[base_cols + delta_cols].rename(columns={
+df_out = df_show[base_cols + (['d_visibility_isect','d_top3_isect','d_top10_isect',
+                                'd_top11_50_isect','d_avg_isect','d_median_isect'] if has_delta else [])
+                 ].rename(columns={
     'domain':'Домен','visibility_weighted':'Видимость',
     'top3':'Топ 1–3','top10':'Топ 1–10','top11_50':'Топ 11–50',
     'avg_position':'Ср.поз','median_position':'Мед.поз','unique_urls':'URL'})
 # Данные оставляем числовыми (не превращаем в текст!) — иначе сортировка сравнивала бы
-# строки побуквенно ('9.3%' оказалось бы после '34.5%'). Формат (%, +/-) — через column_config.
+# строки побуквенно ('9.3%' оказалось бы после '34.5%'). Инлайн-бейджи собираем отдельно,
+# уже после сортировки, только для отображения.
 
 # ── Сортировка ──────────────────────────────────────────────────────────
 # В st.dataframe клик по заголовку сортирует только на стороне браузера — Python об этом
 # не узнаёт и не может пересчитать №. Поэтому сортировку делаем явными контролами:
 # тогда порядок считается в Python, и колонка «№» всегда честно 1..N для текущего вида.
-sort_options = ['Видимость','Топ 1–3','Топ 1–10','Топ 11–50','Ср.поз','Мед.поз','URL','Домен'] + delta_cols
+sort_options = ['Видимость','Топ 1–3','Топ 1–10','Топ 11–50','Ср.поз','Мед.поз','URL','Домен']
 c_s0, c_s1, c_s2 = st.columns([1.1, 2.3, 1.6])
 with c_s0:
     st.markdown('<div style="padding-top:8px;">Сортировать по:</div>', unsafe_allow_html=True)
@@ -264,19 +378,46 @@ df_out = df_out.sort_values(sort_by, ascending=sort_asc).reset_index(drop=True)
 df_out.index = range(1, len(df_out)+1)
 df_out.index.name = '№'
 
-# CSV экспортируем с исходными числами (до форматирования в текст)
+# CSV экспортируем с исходными числами (без markdown-бейджей, до форматирования в текст)
 csv_bytes = df_out.to_csv(index=False).encode('utf-8-sig')
 
-# Форматируем в текст ТОЛЬКО для отображения — сортировка (выше) уже была сделана по числам,
-# так что порядок остаётся верным, а показываем уже красиво.
+def _badge(delta, fmt='.1f', invert=False):
+    """Маленький цветной индекс дельты — markdown-синтаксис :green[]/:red[],
+    который st.table поддерживает нативно (без сырых HTML-тегов)."""
+    if delta is None or pd.isna(delta): return ''
+    if abs(delta) < 0.05: return ''
+    positive = delta > 0
+    if invert: positive = not positive
+    color = 'green' if positive else 'red'
+    arrow = '▲' if delta > 0 else '▼'
+    val = abs(delta)
+    s = f'{val:{fmt}}' if '.' in fmt else str(int(round(val)))
+    return f' :{color}[{arrow}{s}]'
+
+# Форматируем в текст ТОЛЬКО для отображения — сортировка выше уже была сделана по числам.
+# Индекс дельты приклеиваем прямо к значению той же ячейки (не отдельной колонкой).
 df_disp = df_out.copy()
-df_disp['Видимость'] = df_disp['Видимость'].map(lambda x: f'{x:.1f}%')
-df_disp['Ср.поз']    = df_disp['Ср.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
-df_disp['Мед.поз']   = df_disp['Мед.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
-if 'Δ Вид.' in df_disp.columns:
-    df_disp['Δ Вид.']  = df_disp['Δ Вид.'].map(lambda x: f'+{x:.1f}' if pd.notna(x) and x>0 else (f'{x:.1f}' if pd.notna(x) else '—'))
-    df_disp['Δ Т1-3']  = df_disp['Δ Т1-3'].map(lambda x: f'+{int(x)}' if pd.notna(x) and x>0 else (f'{int(x)}' if pd.notna(x) else '—'))
-    df_disp['Δ Т1-10'] = df_disp['Δ Т1-10'].map(lambda x: f'+{int(x)}' if pd.notna(x) and x>0 else (f'{int(x)}' if pd.notna(x) else '—'))
+if has_delta:
+    df_disp['Видимость'] = [
+        f'{v:.1f}%' + _badge(d, '.1f') for v, d in zip(df_out['Видимость'], df_out['d_visibility_isect'])]
+    df_disp['Топ 1–3'] = [
+        f'{v}' + _badge(d, 'd') for v, d in zip(df_out['Топ 1–3'], df_out['d_top3_isect'])]
+    df_disp['Топ 1–10'] = [
+        f'{v}' + _badge(d, 'd') for v, d in zip(df_out['Топ 1–10'], df_out['d_top10_isect'])]
+    df_disp['Топ 11–50'] = [
+        f'{v}' + _badge(d, 'd') for v, d in zip(df_out['Топ 11–50'], df_out['d_top11_50_isect'])]
+    df_disp['Ср.поз'] = [
+        (f'{v:.1f}' if pd.notna(v) else '—') + _badge(d, '.1f', invert=True)
+        for v, d in zip(df_out['Ср.поз'], df_out['d_avg_isect'])]
+    df_disp['Мед.поз'] = [
+        (f'{v:.1f}' if pd.notna(v) else '—') + _badge(d, '.1f', invert=True)
+        for v, d in zip(df_out['Мед.поз'], df_out['d_median_isect'])]
+    df_disp = df_disp.drop(columns=['d_visibility_isect','d_top3_isect','d_top10_isect',
+                                     'd_top11_50_isect','d_avg_isect','d_median_isect'])
+else:
+    df_disp['Видимость'] = df_disp['Видимость'].map(lambda x: f'{x:.1f}%')
+    df_disp['Ср.поз']    = df_disp['Ср.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
+    df_disp['Мед.поз']   = df_disp['Мед.поз'].map(lambda x: f'{x:.1f}' if pd.notna(x) else '—')
 
 def _highlight_our_row(row):
     is_ours = row['Домен'] == our
@@ -285,8 +426,12 @@ def _highlight_our_row(row):
 
 # st.table (не st.dataframe!) — нет клик-сортировки в браузере, поэтому «№» гарантированно
 # всегда 1..N для того порядка, что выбран контролами выше. Плюс: не нужен внутренний скролл,
-# и жирный шрифт для нашего домена рендерится надёжно (полная поддержка CSS).
+# жирный шрифт для нашего домена рендерится надёжно, а markdown-бейджи (:green[]/:red[])
+# рендерятся штатно — st.table официально поддерживает markdown в ячейках.
 st.table(df_disp.style.apply(_highlight_our_row, axis=1), hide_index=False)
+if has_delta:
+    basis = f'пересечению ({n_common} общих запросов)' if use_isect else 'полным спискам запросов (могли отличаться по составу)'
+    st.caption(f'Индексы Δ — изменение с {cmp_date.strftime("%d.%m.%Y")}, по {basis}.')
 st.download_button(
     '⬇️ Экспорт таблицы (CSV)',
     data=csv_bytes,
