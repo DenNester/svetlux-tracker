@@ -135,6 +135,20 @@ def intersection_metrics(df_allpos, engine_key, date_a, date_b, domains):
             })
     return pd.DataFrame(rows).set_index(['check_date','domain']), len(common)
 
+@st.cache_data
+def load_query_frequency():
+    """Опциональный файл: частотность запросов (для разбора вклада в видимость).
+    Без него раздел 'Разбор по запросам' просто не показывается."""
+    for p in [Path(__file__).parent/'query_frequency.csv', Path('query_frequency.csv')]:
+        if p.exists():
+            df = pd.read_csv(str(p), encoding='utf-8-sig')
+            df.columns = df.columns.str.strip()
+            if 'query' not in df.columns or 'freq' not in df.columns:
+                return pd.DataFrame(columns=['query','freq'])
+            df['freq'] = pd.to_numeric(df['freq'], errors='coerce')
+            return df
+    return pd.DataFrame(columns=['query','freq'])
+
 df_sum = load_summary()
 df_pos = load_positions()
 df_allpos = load_all_positions()
@@ -569,6 +583,87 @@ if len(hist_dates) >= 2:
             st.caption('Ось инвертирована: позиция 1 — вверху (лучше), позиция 50 — внизу.')
         else:
             st.info('Накопи хотя бы 2 измерения — тогда появится график динамики.')
+
+st.divider()
+
+# ── Разбор по запросам: сравнение двух сайтов ────────────────────────────
+st.subheader('🔬 Разбор по запросам: сравнение двух сайтов')
+
+df_freq = load_query_frequency()
+sub_allpos = df_allpos[(df_allpos['check_date']==sel_date) & (df_allpos['engine']==engine_key)] if not df_allpos.empty else pd.DataFrame()
+
+if df_allpos.empty or df_freq.empty or sub_allpos.empty:
+    st.info('Для этого раздела нужны файлы `all_positions.csv` (позиции по запросам для всех доменов) '
+            'и `query_frequency.csv` (частотность запросов). Один из них не найден или пуст для этой даты.')
+else:
+    c_ga, c_gb, c_gp = st.columns([1.3, 1.3, 1.4])
+    with c_ga:
+        site_a = st.selectbox('Сайт A', all_domains,
+                              index=all_domains.index(our) if our in all_domains else 0, key='gap_site_a')
+    with c_gb:
+        gb_options = [d for d in all_domains if d != site_a]
+        default_b = next((d for d in df_cur.sort_values('visibility_weighted', ascending=False)['domain']
+                          if d in gb_options), gb_options[0])
+        site_b = st.selectbox('Сайт B', gb_options, index=gb_options.index(default_b), key='gap_site_b')
+    with c_gp:
+        pct_threshold = st.select_slider('Порог веса для топ-запросов', options=[50,60,70,80,90,95], value=80, key='gap_pct')
+
+    freq_map = df_freq.set_index('query')['freq']
+    pos_a = sub_allpos[sub_allpos['domain']==site_a].set_index('query')['position']
+    pos_b = sub_allpos[sub_allpos['domain']==site_b].set_index('query')['position']
+
+    gap_df = pd.DataFrame({'freq': freq_map}).join(pos_a.rename('pos_a')).join(pos_b.rename('pos_b'))
+    gap_df = gap_df.dropna(subset=['freq'])  # только запросы с известной частотой (иначе не посчитать вклад)
+    gap_df['contrib_a'] = gap_df['pos_a'].apply(_pos_weight) * gap_df['freq']
+    gap_df['contrib_b'] = gap_df['pos_b'].apply(_pos_weight) * gap_df['freq']
+    gap_df['gap'] = gap_df['contrib_b'] - gap_df['contrib_a']
+
+    total_a, total_b = gap_df['contrib_a'].sum(), gap_df['contrib_b'].sum()
+
+    def _top_n_for_pct(col, total):
+        if total <= 0: return 0
+        s = gap_df.sort_values(col, ascending=False)[col].cumsum()
+        return int((s <= total*pct_threshold/100).sum()) + 1
+
+    n_a, n_b = _top_n_for_pct('contrib_a', total_a), _top_n_for_pct('contrib_b', total_b)
+    st.caption(f'У **{site_a}** {pct_threshold}% веса видимости дают **{n_a}** запросов из {len(gap_df)} '
+               f'(с известной частотой). У **{site_b}** — **{n_b}** запросов.')
+
+    def _fmt_gap_table(df_slice, contrib_col, site_name):
+        out = df_slice.reset_index().rename(columns={'index':'query'})
+        out['pos_a'] = out['pos_a'].apply(lambda x: str(int(x)) if pd.notna(x) else '—')
+        out['pos_b'] = out['pos_b'].apply(lambda x: str(int(x)) if pd.notna(x) else '—')
+        out = out.rename(columns={'query':'Запрос','freq':'Частота',
+                                   'pos_a':f'Поз. {site_a}','pos_b':f'Поз. {site_b}'})
+        cols = ['Запрос','Частота',f'Поз. {site_a}',f'Поз. {site_b}', contrib_col]
+        return out[cols]
+
+    tab_gap, tab_a, tab_b = st.tabs([
+        f'⚔️ Где {site_b} обходит {site_a}', f'🏆 Топ-вклад: {site_a}', f'🏆 Топ-вклад: {site_b}'
+    ])
+
+    with tab_gap:
+        st.caption('Отсортировано по тому, насколько сильно (с учётом частоты запроса) B обгоняет A. '
+                   'Самые частотные и самые «болезненные» проигрыши — всегда сверху.')
+        show = gap_df[gap_df['gap'] > 0].sort_values('gap', ascending=False).head(50).copy()
+        show['gap'] = show['gap'].round(0)
+        tbl = _fmt_gap_table(show, 'gap', site_b).rename(columns={'gap':'Δ веса (в пользу B)'})
+        st.dataframe(tbl, height=450, hide_index=True)
+        st.download_button('⬇️ Экспорт разбора (CSV)',
+            data=tbl.to_csv(index=False).encode('utf-8-sig'),
+            file_name=f'gap_{site_a}_vs_{site_b}_{sel_date}.csv', mime='text/csv', key='dl_gap')
+
+    with tab_a:
+        show_a = gap_df.sort_values('contrib_a', ascending=False).head(max(n_a, 10)).copy()
+        show_a['contrib_a'] = show_a['contrib_a'].round(0)
+        st.dataframe(_fmt_gap_table(show_a, 'contrib_a', site_a).rename(columns={'contrib_a':'Вклад в видимость'}),
+                     height=400, hide_index=True)
+
+    with tab_b:
+        show_b = gap_df.sort_values('contrib_b', ascending=False).head(max(n_b, 10)).copy()
+        show_b['contrib_b'] = show_b['contrib_b'].round(0)
+        st.dataframe(_fmt_gap_table(show_b, 'contrib_b', site_b).rename(columns={'contrib_b':'Вклад в видимость'}),
+                     height=400, hide_index=True)
 
 st.divider()
 
